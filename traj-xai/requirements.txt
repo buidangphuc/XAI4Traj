@@ -1,0 +1,15 @@
+rdp
+fastdtw
+pactus
+numpy
+scikit-learn
+geopandas
+keras
+tensorflow
+pandas
+psutil
+yupi
+matplotlib
+seaborn
+shapely
+xgboost

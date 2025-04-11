@@ -2,6 +2,7 @@
 Evaluation metrics for trajectory explanation models.
 """
 
+
 def ap_at_k(y_true, relevant_class, k):
     """
     Calculate AP@K (Average Precision at K) for a given class relevance.
@@ -19,7 +20,7 @@ def ap_at_k(y_true, relevant_class, k):
 
     num_relevant = 0  # Count of relevant items encountered so far
     score_sum = 0.0  # Sum of precision at each relevant point
-    
+
     for i in range(k):
         if str(y_true[i]) != relevant_class:
             num_relevant += 1

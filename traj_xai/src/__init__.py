@@ -23,6 +23,10 @@ from .segmentation import (
     sliding_window_segmentation,
 )
 from .xai import TrajectoryManipulator
+from .models import TransformerModel
+from .gru_model import GRUModel
+from .simple_gru_model import SimpleGRUModel
+from .simple_transformer_model import SimpleTransformerModel
 
 __all__ = [
     "rdp_segmentation",
@@ -39,4 +43,8 @@ __all__ = [
     "save_result_row",
     "check_ram_and_log",
     "generate_unique_name",
+    "TransformerModel",
+    "GRUModel",
+    "SimpleGRUModel",
+    "SimpleTransformerModel",
 ]

@@ -85,8 +85,38 @@ def experiment(dataset, segment_func, perturbation_func, blackbox_model):
                 continue
 
             try:
-                y_true_array = y_true[0]
-                change = 1 if any(item not in relevant_class for item in y_true) else 0
+                import numpy as np
+                
+                # Improved handling of different data types
+                change = 0
+                for item in y_true:
+                    # Check if this prediction is in the relevant class set
+                    is_in_relevant = False
+                    
+                    # Data type-aware comparison
+                    for cls in relevant_class:
+                        # Case 1: Both are numpy arrays
+                        if isinstance(item, np.ndarray) and isinstance(cls, np.ndarray):
+                            if np.array_equal(item, cls):
+                                is_in_relevant = True
+                                break
+                        # Case 2: Both are numpy-like objects with shape attribute
+                        elif hasattr(item, 'shape') and hasattr(cls, 'shape'):
+                            try:
+                                if np.all(item == cls):  # Element-wise comparison
+                                    is_in_relevant = True
+                                    break
+                            except:
+                                pass  # If comparison fails, continue to next check
+                        # Case 3: Standard equality for other types (strings, numbers, etc.)
+                        elif item == cls:
+                            is_in_relevant = True
+                            break
+                    
+                    # If this prediction isn't in the relevant class, we have a change
+                    if not is_in_relevant:
+                        change = 1
+                        break
             except Exception as e:
                 print(f"Error computing change for trajectory {traj_idx}: {e}")
                 continue

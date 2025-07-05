@@ -3,6 +3,7 @@ Experiment execution logic for trajectory XAI.
 """
 
 import os
+import numpy as np
 
 from .evaluation import ap_at_k
 from .utils import check_ram_and_log, generate_unique_name, save_result_row
@@ -85,8 +86,6 @@ def experiment(dataset, segment_func, perturbation_func, blackbox_model):
                 continue
 
             try:
-                import numpy as np
-                
                 # Improved handling of different data types
                 change = 0
                 for item in y_true:

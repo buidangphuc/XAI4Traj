@@ -15,9 +15,6 @@ from yupi import Trajectory
 class TrajectoryManipulator:
     """
     Manipulates trajectories to explain model predictions using XAI techniques.
-
-    This class implements a method to explain black-box models by perturbing
-    trajectory segments and analyzing the effect on model predictions.
     """
 
     def __init__(
@@ -28,19 +25,8 @@ class TrajectoryManipulator:
         model,
         deep_learning_model=False,
     ):
-        """
-        Initialize the TrajectoryManipulator.
-
-        Parameters:
-            X (list): The trajectory points
-            segmentation_model (callable): Function to segment trajectories
-            perturbation_model (callable): Function to perturb trajectory segments
-            model: The black box model to explain
-            deep_learning_model (bool): Whether the model is a deep learning model
-        """
         try:
-            self.X = list(X)  # Convert to list instead of numpy array
-
+            self.X = list(X)
             self.segmentation_model = segmentation_model
             self.perturbation_model = perturbation_model
             self.model = model
@@ -73,15 +59,6 @@ class TrajectoryManipulator:
             print(f"Error in __init__: {e}")
 
     def _segmentation(self, points_list):
-        """
-        Segment trajectory using provided segmentation model.
-
-        Parameters:
-            points_list (list): List of trajectory points
-
-        Returns:
-            list: Segmented trajectory
-        """
         try:
             return self.segmentation_model(points_list)
         except Exception as e:
@@ -89,34 +66,14 @@ class TrajectoryManipulator:
             return []
 
     def _perturbation(self, segment):
-        """
-        Apply perturbation to a trajectory segment.
-
-        Parameters:
-            segment (list): Trajectory segment to perturb
-
-        Returns:
-            list: Perturbed segment
-        """
         try:
-            perturbed_segment = self.perturbation_model(segment)
-            return perturbed_segment
+            return self.perturbation_model(segment)
         except Exception as e:
             print(f"Error in _perturbation: {e}")
             return segment
 
     @staticmethod
     def create_perturbation_points_by_shuffle(vector_length, samples):
-        """
-        Create binary vectors for perturbation combinations.
-
-        Parameters:
-            vector_length (int): Length of perturbation vector
-            samples (int): Number of samples to generate
-
-        Returns:
-            list: List of binary perturbation vectors
-        """
         try:
             return [
                 [random.randint(0, 1) for _ in range(vector_length)]
@@ -127,15 +84,6 @@ class TrajectoryManipulator:
             return [[0] * vector_length for _ in range(samples)]
 
     def _convert_perturb_vector_to_traj(self, vector):
-        """
-        Convert a perturbation vector to a trajectory.
-
-        Parameters:
-            vector (list): Binary perturbation vector
-
-        Returns:
-            list: Combined trajectory with perturbed segments
-        """
         try:
             return sum(
                 [
@@ -149,12 +97,6 @@ class TrajectoryManipulator:
             return []
 
     def _perturbed_traj_generator(self):
-        """
-        Generate perturbed trajectories based on perturbation vectors.
-
-        Yields:
-            list: Perturbed trajectories
-        """
         try:
             for vector in self.perturb_vectors:
                 yield self._convert_perturb_vector_to_traj(vector)
@@ -162,12 +104,6 @@ class TrajectoryManipulator:
             print(f"Error in _perturbed_traj_generator: {e}")
 
     def _createZForEval(self):
-        """
-        Create evaluation trajectories with one segment perturbed at a time.
-
-        Returns:
-            list: List of trajectories for evaluation
-        """
         try:
             identity_matrix = [
                 [1 if i == j else 0 for j in range(self.x_len)]
@@ -188,15 +124,6 @@ class TrajectoryManipulator:
             return []
 
     def calc_dtw(self, raw):
-        """
-        Calculate DTW distance between raw trajectory and perturbed trajectories.
-
-        Parameters:
-            raw (list): Raw trajectory
-
-        Returns:
-            list: List of DTW distances
-        """
         try:
             return [
                 fastdtw(raw, pert, dist=euclidean)[0]
@@ -207,12 +134,6 @@ class TrajectoryManipulator:
             return []
 
     def _calculate_weight(self):
-        """
-        Calculate weights for the logistic regression based on DTW distances.
-
-        Returns:
-            list: List of weights
-        """
         try:
             distances = self.calc_dtw(self.X)
             mean_dist = sum(distances) / len(distances)
@@ -230,98 +151,229 @@ class TrajectoryManipulator:
             print(f"Error in _calculate_weight: {e}")
             return []
 
-    def explain(self):
+    def _safe_predict(self, dataset, fallback_value=None):
         """
-        Generate explanations for trajectory classification.
-
+        Safely call model.predict with error handling for format mismatches.
+        
+        Args:
+            dataset: The dataset to predict on
+            fallback_value: Value to return if prediction fails
+            
         Returns:
-            numpy.ndarray: Model coefficients for each class
+            Prediction results or fallback value
         """
         try:
+            print(f"[DEBUG] Attempting standard predict call")
+            return self.model.predict(dataset)
+        except ValueError as e:
+            if "not enough values to unpack" in str(e):
+                print(f"[DEBUG] Standard predict failed: {e}, trying alternative approach")
+                try:
+                    if hasattr(dataset, 'trajs'):
+                        print(f"[DEBUG] Trying predict with just trajectories")
+                        return self.model.predict(dataset.trajs)
+                    elif hasattr(self.model, 'predict_raw'):
+                        print(f"[DEBUG] Trying predict_raw method")
+                        return self.model.predict_raw(dataset)
+                    elif hasattr(self.model, '_get_input_data'):
+                        print(f"[DEBUG] Trying with custom input processing")
+                        # Try to provide the expected values manually
+                        try:
+                            x_data, y_data = self.model._get_input_data(dataset)
+                            lengths = [len(x) for x in x_data]
+                            return self.model._predict_with_data(x_data, lengths)
+                        except Exception as inner_e:
+                            print(f"[DEBUG] Custom input processing failed: {inner_e}")
+                    else:
+                        print(f"[DEBUG] Trying direct prediction from trajectories")
+                        if isinstance(dataset, Dataset) and hasattr(dataset, 'trajs'):
+                            return self.model.predict([t.points for t in dataset.trajs])
+                except Exception as alt_e:
+                    print(f"[DEBUG] Alternative predict approach failed: {alt_e}")
+            print(f"[DEBUG] Predict failed: {e}, returning fallback value")
+            return fallback_value
+
+    def explain(self):
+        try:
+            print(f"[DEBUG] Pre-explain segments: {len(self.segments)}")
+
             Z_trajs = [
                 Trajectory(points=Z_traj) for Z_traj in self._perturbed_traj_generator()
             ]
             labels = [1] * (len(Z_trajs) - 1) + [0]
             Z_pro = Dataset("custom", Z_trajs, labels)
-            preds = self.model.predict(Z_pro)
-            pred_labels = [pred.argmax() for pred in preds]
-            Y = self.model.encoder.inverse_transform(pred_labels)
 
-            # Check if Y only has one value, return None
+            print("[DEBUG] About to call model.predict() in explain()")
+            fallback = np.zeros((len(Z_trajs), 1))
+            result = self._safe_predict(Z_pro, fallback)
+            
+            print(f"[DEBUG] model.predict() result type: {type(result)}")
+            if isinstance(result, tuple):
+                print(f"[DEBUG] model.predict() returned tuple of length {len(result)}")
+                for i, item in enumerate(result):
+                    print(f"[DEBUG] Tuple item {i} type: {type(item)}, shape: {getattr(item, 'shape', 'N/A')}")
+            elif isinstance(result, np.ndarray):
+                print(f"[DEBUG] model.predict() returned ndarray of shape {result.shape}")
+            else:
+                print(f"[DEBUG] model.predict() value: {result}")
+
+            preds = result
+            
+            try:
+                print(f"[DEBUG] preds type: {type(preds)}, value: {preds}")
+                
+                if isinstance(preds, tuple):
+                    print(f"[DEBUG] Handling tuple prediction with {len(preds)} elements")
+                    pred_labels = [pred.argmax() if hasattr(pred, 'argmax') else pred for pred in preds[0]]
+                else:
+                    pred_labels = [pred.argmax() if hasattr(pred, 'argmax') else pred for pred in preds]
+                
+                print(f"[DEBUG] pred_labels: {pred_labels}")
+                print(f"[DEBUG] encoder type: {type(self.model.encoder)}")
+                Y = self.model.encoder.inverse_transform(pred_labels)
+                print(f"[DEBUG] Y after inverse_transform: {Y}")
+            except Exception as e:
+                print(f"[DEBUG] Error in prediction processing: {e}")
+                if isinstance(preds, tuple):
+                    print(f"[DEBUG] Attempting alternative tuple handling")
+                    pred_labels = preds[0]
+                    Y = pred_labels
+                else:
+                    Y = preds
+                print(f"[DEBUG] Y using fallback approach: {Y}")
+
             if len(np.unique(Y)) == 1:
                 return None
 
             clf = LogisticRegression()
-            clf.fit(self.perturb_vectors, Y, sample_weight=self._calculate_weight())
+            weights = self._calculate_weight()
+            print(f"[DEBUG] weights length: {len(weights)}, perturb_vectors length: {len(self.perturb_vectors)}")
+            clf.fit(self.perturb_vectors, Y, sample_weight=weights)
 
             self.coef_ = clf.coef_
             self.classes_ = clf.classes_
             return self.coef_
+
         except Exception as e:
             print(f"Error in explain: {e}")
+            import traceback
+            traceback.print_exc()
             return np.zeros((1, self.x_len))
 
     def get_Y_eval_sorted(self):
-        """
-        Get sorted evaluation predictions.
-
-        Returns:
-            list: Sorted predictions
-        """
         try:
             Z_trajs = [Trajectory(points=Z_traj) for Z_traj in self.Z_eval]
             labels = [1] * (len(Z_trajs) - 1) + [0]
             Z_pro = Dataset("custom1", Z_trajs, labels)
-            Y = self.model.predict(Z_pro)  # Prediction results
+
+            print("[DEBUG] About to call model.predict() in get_Y_eval_sorted()")
+            fallback = np.zeros(len(Z_trajs))
+            result = self._safe_predict(Z_pro, fallback)
+            
+            print(f"[DEBUG] model.predict() in get_Y_eval_sorted type: {type(result)}")
+            if isinstance(result, tuple):
+                print(f"[DEBUG] Tuple prediction with {len(result)} elements: {[type(x) for x in result]}")
+                if len(result) >= 2:
+                    Y = result[0]
+                    print(f"[DEBUG] Using first element of tuple as Y: {type(Y)}")
+                else:
+                    Y = result
+            else:
+                print(f"[DEBUG] model.predict() value: {result}")
+                Y = result
 
             if Y is None:
-                return None  # Return None if Y is None
+                return fallback
 
-            Y_without_pertub = self.get_Y()  # Actual result, single class
+            try:
+                print("[DEBUG] About to call get_Y()")
+                Y_without_pertub = self.get_Y()
+                print(f"[DEBUG] Y_without_pertub: {Y_without_pertub}")
+            except Exception as e:
+                print(f"[DEBUG] Error in get_Y call: {e}")
+                Y_without_pertub = []
 
-            class_index = None
-            if len(np.unique(Y)) > 2:
-                # Find index of class in self.classes_
-                class_index = np.where(self.classes_ == Y_without_pertub[0])[0][0]
-
-                # Get weights row for corresponding class from self.coef_
-                class_coef = self.coef_[class_index]
-            else:
-                class_coef = self.coef_[0]
-
-            # Sort indices by weight from high to low
-            sorted_indices = np.argsort(abs(class_coef))[::-1]
-
-            return [Y[i] for i in sorted_indices]
+            try:
+                print(f"[DEBUG] self.classes_: {getattr(self, 'classes_', 'not set')}")
+                print(f"[DEBUG] self.coef_: {getattr(self, 'coef_', 'not set')}")
+                
+                class_index = None
+                if hasattr(self, 'classes_') and hasattr(self, 'coef_'):
+                    if len(np.unique(Y)) > 2 and len(Y_without_pertub) > 0:
+                        print(f"[DEBUG] Finding class index for {Y_without_pertub[0]} in {self.classes_}")
+                        class_index = np.where(self.classes_ == Y_without_pertub[0])[0][0]
+                        class_coef = self.coef_[class_index]
+                    else:
+                        class_coef = self.coef_[0]
+                else:
+                    print("[DEBUG] classes_ or coef_ not available, using zeros")
+                    class_coef = np.zeros(len(self.Z_eval))
+                
+                print(f"[DEBUG] class_coef: {class_coef}")
+                sorted_indices = np.argsort(abs(class_coef))[::-1]
+                print(f"[DEBUG] sorted_indices: {sorted_indices}")
+                
+                result = []
+                for i in sorted_indices:
+                    if isinstance(Y, list) and i < len(Y):
+                        result.append(Y[i])
+                    elif hasattr(Y, '__getitem__') and i < len(Y):
+                        result.append(Y[i])
+                    else:
+                        print(f"[DEBUG] Index {i} out of bounds for Y of type {type(Y)} with length {getattr(Y, '__len__', lambda: 'unknown')()}")
+                
+                return result
+            except Exception as e:
+                print(f"[DEBUG] Error in sorting/processing: {e}")
+                import traceback
+                traceback.print_exc()
+                return Y
 
         except Exception as e:
             print(f"Error in get_Y_eval_sorted: {e}")
+            import traceback
+            traceback.print_exc()
             return np.zeros(len(self.Z_eval))
 
     def get_Y(self):
-        """
-        Get model prediction for the original trajectory.
-
-        Returns:
-            list: Model prediction
-        """
         try:
             Z_trajs = [Trajectory(points=self.X)]
             labels = [0]
             Z_pro = Dataset("custom1", Z_trajs, labels)
-            Y = self.model.predict(Z_pro)
+
+            print("[DEBUG] About to call model.predict() in get_Y()")
+            fallback = []
+            result = self._safe_predict(Z_pro, fallback)
+            
+            print(f"[DEBUG] model.predict() in get_Y type: {type(result)}")
+            if isinstance(result, tuple):
+                print(f"[DEBUG] Tuple prediction in get_Y with {len(result)} elements")
+                for i, item in enumerate(result):
+                    print(f"[DEBUG] Tuple item {i} type: {type(item)}, shape: {getattr(item, 'shape', 'N/A')}")
+                if len(result) >= 2:
+                    Y = result[0]
+                else:
+                    Y = result
+            else:
+                print(f"[DEBUG] model.predict() value: {result}")
+                Y = result
+            
+            if not isinstance(Y, list):
+                if hasattr(Y, 'tolist'):
+                    Y = Y.tolist()
+                else:
+                    Y = [Y]
+                    
+            print(f"[DEBUG] Returning Y: {Y}")
             return Y
+
         except Exception as e:
             print(f"Error in get_Y: {e}")
+            import traceback
+            traceback.print_exc()
             return []
 
     def get_segment(self):
-        """
-        Get trajectory segments.
-
-        Returns:
-            list: List of segments
-        """
         try:
             return self.segments
         except Exception as e:

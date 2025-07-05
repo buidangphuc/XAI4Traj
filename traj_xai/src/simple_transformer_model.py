@@ -27,11 +27,11 @@ class SimpleTransformerModel(Model):
 
     def __init__(
         self,
-        embed_dim: int = 64,
-        num_heads: int = 4,
-        ff_dim: int = 128,
-        num_layers: int = 2,
-        dropout: float = 0.1,
+        embed_dim: int = 16,
+        num_heads: int = 1,
+        ff_dim: int = 32,
+        num_layers: int = 1,
+        dropout: float = 0.05,
         loss="cross_entropy",
         optimizer_params=None,
         metrics=None,

@@ -163,92 +163,89 @@ class TrajectoryManipulator:
             Prediction results or fallback value
         """
         try:
-            print(f"[DEBUG] Attempting standard predict call")
             return self.model.predict(dataset)
         except ValueError as e:
             if "not enough values to unpack" in str(e):
-                print(f"[DEBUG] Standard predict failed: {e}, trying alternative approach")
                 try:
                     if hasattr(dataset, 'trajs'):
-                        print(f"[DEBUG] Trying predict with just trajectories")
                         return self.model.predict(dataset.trajs)
                     elif hasattr(self.model, 'predict_raw'):
-                        print(f"[DEBUG] Trying predict_raw method")
                         return self.model.predict_raw(dataset)
                     elif hasattr(self.model, '_get_input_data'):
-                        print(f"[DEBUG] Trying with custom input processing")
-                        # Try to provide the expected values manually
                         try:
                             x_data, y_data = self.model._get_input_data(dataset)
                             lengths = [len(x) for x in x_data]
                             return self.model._predict_with_data(x_data, lengths)
-                        except Exception as inner_e:
-                            print(f"[DEBUG] Custom input processing failed: {inner_e}")
-                    else:
-                        print(f"[DEBUG] Trying direct prediction from trajectories")
-                        if isinstance(dataset, Dataset) and hasattr(dataset, 'trajs'):
+                        except Exception:
+                            pass
+                    # Try direct prediction with trajectory points
+                    if isinstance(dataset, Dataset) and hasattr(dataset, 'trajs'):
+                        try:
                             return self.model.predict([t.points for t in dataset.trajs])
-                except Exception as alt_e:
-                    print(f"[DEBUG] Alternative predict approach failed: {alt_e}")
-            print(f"[DEBUG] Predict failed: {e}, returning fallback value")
+                        except Exception:
+                            # Try one more approach for neural networks
+                            if self.deep_learning_model and hasattr(self.model, 'predict_proba'):
+                                return self.model.predict_proba([t.points for t in dataset.trajs])
+                except Exception:
+                    pass
             return fallback_value
 
     def explain(self):
         try:
-            print(f"[DEBUG] Pre-explain segments: {len(self.segments)}")
-
             Z_trajs = [
                 Trajectory(points=Z_traj) for Z_traj in self._perturbed_traj_generator()
             ]
             labels = [1] * (len(Z_trajs) - 1) + [0]
             Z_pro = Dataset("custom", Z_trajs, labels)
 
-            print("[DEBUG] About to call model.predict() in explain()")
             fallback = np.zeros((len(Z_trajs), 1))
             result = self._safe_predict(Z_pro, fallback)
             
-            print(f"[DEBUG] model.predict() result type: {type(result)}")
-            if isinstance(result, tuple):
-                print(f"[DEBUG] model.predict() returned tuple of length {len(result)}")
-                for i, item in enumerate(result):
-                    print(f"[DEBUG] Tuple item {i} type: {type(item)}, shape: {getattr(item, 'shape', 'N/A')}")
-            elif isinstance(result, np.ndarray):
-                print(f"[DEBUG] model.predict() returned ndarray of shape {result.shape}")
-            else:
-                print(f"[DEBUG] model.predict() value: {result}")
-
             preds = result
             
             try:
-                print(f"[DEBUG] preds type: {type(preds)}, value: {preds}")
-                
                 if isinstance(preds, tuple):
-                    print(f"[DEBUG] Handling tuple prediction with {len(preds)} elements")
                     pred_labels = [pred.argmax() if hasattr(pred, 'argmax') else pred for pred in preds[0]]
+                elif isinstance(preds, np.ndarray) and len(preds.shape) == 2 and preds.shape[1] > 1:
+                    # Handle probability outputs from neural networks
+                    pred_labels = np.argmax(preds, axis=1)
                 else:
                     pred_labels = [pred.argmax() if hasattr(pred, 'argmax') else pred for pred in preds]
                 
-                print(f"[DEBUG] pred_labels: {pred_labels}")
-                print(f"[DEBUG] encoder type: {type(self.model.encoder)}")
-                Y = self.model.encoder.inverse_transform(pred_labels)
-                print(f"[DEBUG] Y after inverse_transform: {Y}")
+                # Try to inverse transform if encoder is available
+                if hasattr(self.model, 'encoder'):
+                    Y = self.model.encoder.inverse_transform(pred_labels)
+                elif hasattr(self.model, 'classes_'):
+                    # For scikit-learn models
+                    Y = [self.model.classes_[label] if isinstance(label, (int, np.integer)) and label < len(self.model.classes_) else label for label in pred_labels]
+                else:
+                    Y = pred_labels
             except Exception as e:
-                print(f"[DEBUG] Error in prediction processing: {e}")
                 if isinstance(preds, tuple):
-                    print(f"[DEBUG] Attempting alternative tuple handling")
                     pred_labels = preds[0]
                     Y = pred_labels
                 else:
                     Y = preds
-                print(f"[DEBUG] Y using fallback approach: {Y}")
+
+            # Ensure Y is converted to a consistent format
+            if isinstance(Y, np.ndarray) and Y.ndim == 1:
+                Y = Y.tolist()
+            elif not isinstance(Y, list):
+                Y = [Y]
 
             if len(np.unique(Y)) == 1:
                 return None
 
             clf = LogisticRegression()
             weights = self._calculate_weight()
-            print(f"[DEBUG] weights length: {len(weights)}, perturb_vectors length: {len(self.perturb_vectors)}")
-            clf.fit(self.perturb_vectors, Y, sample_weight=weights)
+            # Convert Y to integers if they're strings for LogisticRegression
+            if Y and isinstance(Y[0], str):
+                from sklearn.preprocessing import LabelEncoder
+                le = LabelEncoder()
+                Y_encoded = le.fit_transform(Y)
+                clf.fit(self.perturb_vectors, Y_encoded, sample_weight=weights)
+            else:
+                clf.fit(self.perturb_vectors, Y, sample_weight=weights)
 
             self.coef_ = clf.coef_
             self.classes_ = clf.classes_
@@ -266,52 +263,51 @@ class TrajectoryManipulator:
             labels = [1] * (len(Z_trajs) - 1) + [0]
             Z_pro = Dataset("custom1", Z_trajs, labels)
 
-            print("[DEBUG] About to call model.predict() in get_Y_eval_sorted()")
             fallback = np.zeros(len(Z_trajs))
             result = self._safe_predict(Z_pro, fallback)
             
-            print(f"[DEBUG] model.predict() in get_Y_eval_sorted type: {type(result)}")
             if isinstance(result, tuple):
-                print(f"[DEBUG] Tuple prediction with {len(result)} elements: {[type(x) for x in result]}")
                 if len(result) >= 2:
                     Y = result[0]
-                    print(f"[DEBUG] Using first element of tuple as Y: {type(Y)}")
                 else:
                     Y = result
+            elif isinstance(result, np.ndarray) and len(result.shape) == 2 and result.shape[1] > 1:
+                # Handle probability outputs from neural networks
+                Y = np.argmax(result, axis=1)
+                if hasattr(Y, 'tolist'):
+                    Y = Y.tolist()
             else:
-                print(f"[DEBUG] model.predict() value: {result}")
                 Y = result
 
             if Y is None:
                 return fallback
 
             try:
-                print("[DEBUG] About to call get_Y()")
                 Y_without_pertub = self.get_Y()
-                print(f"[DEBUG] Y_without_pertub: {Y_without_pertub}")
-            except Exception as e:
-                print(f"[DEBUG] Error in get_Y call: {e}")
+            except Exception:
                 Y_without_pertub = []
 
             try:
-                print(f"[DEBUG] self.classes_: {getattr(self, 'classes_', 'not set')}")
-                print(f"[DEBUG] self.coef_: {getattr(self, 'coef_', 'not set')}")
-                
                 class_index = None
                 if hasattr(self, 'classes_') and hasattr(self, 'coef_'):
-                    if len(np.unique(Y)) > 2 and len(Y_without_pertub) > 0:
-                        print(f"[DEBUG] Finding class index for {Y_without_pertub[0]} in {self.classes_}")
-                        class_index = np.where(self.classes_ == Y_without_pertub[0])[0][0]
-                        class_coef = self.coef_[class_index]
+                    if len(Y_without_pertub) > 0:
+                        # Try to find the corresponding class index
+                        try:
+                            target_class = Y_without_pertub[0]
+                            if isinstance(target_class, str) and all(isinstance(c, (int, np.integer)) for c in self.classes_):
+                                # Convert string to int if needed
+                                target_class = int(target_class)
+                            class_index = np.where(self.classes_ == target_class)[0][0]
+                            class_coef = self.coef_[class_index]
+                        except (ValueError, IndexError, TypeError):
+                            # If we can't find the class, use the first coefficient vector
+                            class_coef = self.coef_[0]
                     else:
                         class_coef = self.coef_[0]
                 else:
-                    print("[DEBUG] classes_ or coef_ not available, using zeros")
                     class_coef = np.zeros(len(self.Z_eval))
                 
-                print(f"[DEBUG] class_coef: {class_coef}")
                 sorted_indices = np.argsort(abs(class_coef))[::-1]
-                print(f"[DEBUG] sorted_indices: {sorted_indices}")
                 
                 result = []
                 for i in sorted_indices:
@@ -319,12 +315,10 @@ class TrajectoryManipulator:
                         result.append(Y[i])
                     elif hasattr(Y, '__getitem__') and i < len(Y):
                         result.append(Y[i])
-                    else:
-                        print(f"[DEBUG] Index {i} out of bounds for Y of type {type(Y)} with length {getattr(Y, '__len__', lambda: 'unknown')()}")
                 
                 return result
             except Exception as e:
-                print(f"[DEBUG] Error in sorting/processing: {e}")
+                print(f"Error in get_Y_eval_sorted processing: {e}")
                 import traceback
                 traceback.print_exc()
                 return Y
@@ -341,21 +335,18 @@ class TrajectoryManipulator:
             labels = [0]
             Z_pro = Dataset("custom1", Z_trajs, labels)
 
-            print("[DEBUG] About to call model.predict() in get_Y()")
             fallback = []
             result = self._safe_predict(Z_pro, fallback)
             
-            print(f"[DEBUG] model.predict() in get_Y type: {type(result)}")
             if isinstance(result, tuple):
-                print(f"[DEBUG] Tuple prediction in get_Y with {len(result)} elements")
-                for i, item in enumerate(result):
-                    print(f"[DEBUG] Tuple item {i} type: {type(item)}, shape: {getattr(item, 'shape', 'N/A')}")
                 if len(result) >= 2:
                     Y = result[0]
                 else:
                     Y = result
+            elif isinstance(result, np.ndarray) and len(result.shape) == 2 and result.shape[1] > 1:
+                # Handle probability outputs from neural networks
+                Y = np.argmax(result, axis=1)
             else:
-                print(f"[DEBUG] model.predict() value: {result}")
                 Y = result
             
             if not isinstance(Y, list):
@@ -364,7 +355,6 @@ class TrajectoryManipulator:
                 else:
                     Y = [Y]
                     
-            print(f"[DEBUG] Returning Y: {Y}")
             return Y
 
         except Exception as e:
